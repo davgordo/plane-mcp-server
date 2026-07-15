@@ -133,6 +133,8 @@ export PLANE_WORKSPACE_SLUG="your-workspace-slug"
 
 The server provides comprehensive tools for interacting with Plane. All tools use Pydantic models from the Plane SDK for type safety and validation.
 
+Tools that expose a `fields` argument use it as a true sparse fieldset. For example, `fields="id,name,target_date"` returns only those top-level resource fields; unrequested resource fields are absent, while a requested field whose value is null remains present as `null`. Pagination metadata is not affected by `fields`. Omitting `fields` returns the complete normal response shape.
+
 ### Projects
 
 | Tool Name | Description |
@@ -388,4 +390,3 @@ If you were using the previous Node.js-based `@makeplane/plane-mcp-server`, your
 ```
 
 **Please migrate to the new Python-based configuration shown in the Usage section above.**
-

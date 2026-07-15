@@ -13,14 +13,13 @@ from plane.models.work_items import (
     PaginatedWorkItemResponse,
     UpdateWorkItem,
     WorkItem,
-    WorkItemDetail,
     WorkItemGroupedCountResponse,
-    WorkItemSearch,
 )
 from pydantic import Field
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.tools.pql_reference import PQL_FIELD_HINT, PQL_FULL_REFERENCE
+from plane_mcp.tools.serialization import serialize_resource, serialize_resources
 
 logger = get_logger(__name__)
 
@@ -71,14 +70,13 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             per_page: 1-100, default 25.
             cursor: From previous response's next_cursor.
             expand: Comma-separated relations to expand (e.g. assignees,labels,state).
-            fields: Sparse fieldset — id, name, sequence_id, priority, state,
+            fields: True sparse fieldset — id, name, sequence_id, priority, state,
                 project, assignees, labels, type_id, description_html, start_date,
                 target_date, created_at, updated_at, created_by, is_draft. Use
                 `project` (not `project_id`) and `description_html` (there is no
-                `description` field). Any field you omit or misname comes back
-                null — a null here does NOT mean the item lacks that value; it
-                means it was not requested. To read the description, include
-                description_html; for the type, include type_id.
+                `description` field). Unrequested fields are absent; requested
+                fields that are really null remain present as null. To read the
+                description, include description_html; for the type, include type_id.
             external_id / external_source: Filter by external system.
 
         Returns:
@@ -124,9 +122,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             raise
 
         return {
-            "results": [
-                item.model_dump() if hasattr(item, "model_dump") else item for item in (response.results or [])
-            ],
+            "results": serialize_resources(response.results or [], fields=fields),
             "total_count": response.total_count,
             "count": response.count,
             "next_cursor": response.next_cursor,
@@ -272,7 +268,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
-    ) -> WorkItemDetail:
+    ) -> dict[str, Any]:
         """
         Retrieve a work item by ID.
 
@@ -280,13 +276,14 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             project_id: UUID of the project
             work_item_id: UUID of the work item
             expand: Comma-separated fields to expand (e.g., "assignees,labels,state")
-            fields: Comma-separated fields to include in response
+            fields: Comma-separated sparse fieldset. Unrequested fields are absent;
+                requested null fields remain present as null.
             external_id: External system identifier for filtering
             external_source: External system source name for filtering
             order_by: Field to order results by
 
         Returns:
-            WorkItemDetail object with expanded relationships
+            Work item data as a dictionary.
         """
         client, workspace_slug = get_plane_client_context()
 
@@ -298,12 +295,13 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             order_by=order_by,
         )
 
-        return client.work_items.retrieve(
+        work_item = client.work_items.retrieve(
             workspace_slug=workspace_slug,
             project_id=project_id,
             work_item_id=work_item_id,
             params=params,
         )
+        return serialize_resource(work_item, fields=fields)
 
     @mcp.tool()
     def retrieve_work_item_by_identifier(
@@ -313,7 +311,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
-    ) -> WorkItemDetail:
+    ) -> dict[str, Any]:
         """
         Retrieve a work item by its full identifier (project prefix + sequence number).
 
@@ -339,7 +337,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             order_by: Field to order results by
 
         Returns:
-            WorkItemDetail object with expanded relationships
+            Work item data as a dictionary.
         """
         parts = work_item_identifier.rsplit("-", 1)
         if len(parts) != 2 or not parts[1].isdigit():
@@ -358,12 +356,13 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             order_by=order_by,
         )
 
-        return client.work_items.retrieve_by_identifier(
+        work_item = client.work_items.retrieve_by_identifier(
             workspace_slug=workspace_slug,
             project_identifier=project_identifier,
             issue_identifier=int(sequence_str),
             params=params,
         )
+        return serialize_resource(work_item, fields=fields)
 
     @mcp.tool()
     def update_work_item(
@@ -593,9 +592,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
                 }
             raise
         return {
-            "results": [
-                item.model_dump() if hasattr(item, "model_dump") else item for item in (response.results or [])
-            ],
+            "results": serialize_resources(response.results or [], fields=fields),
             "total_count": response.total_count,
             "count": response.count,
             "next_cursor": response.next_cursor,
@@ -639,7 +636,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
-    ) -> WorkItemSearch:
+    ) -> dict[str, Any]:
         """
         Search work items by text across a workspace.
 
@@ -650,13 +647,14 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         Args:
             query: Free-text search string across work item name and description
             expand: Comma-separated list of related fields to expand in response
-            fields: Comma-separated list of fields to include in response
+            fields: Comma-separated sparse fieldset for each returned issue.
+                Unrequested fields are absent; requested null fields remain present as null.
             external_id: External system identifier for filtering
             external_source: External system source name for filtering
             order_by: Field to order results by. Prefix with '-' for descending
 
         Returns:
-            WorkItemSearch object containing search results
+            Search result dictionary containing matching issues.
         """
         client, workspace_slug = get_plane_client_context()
 
@@ -668,4 +666,8 @@ def register_work_item_tools(mcp: FastMCP) -> None:
             order_by=order_by,
         )
 
-        return client.work_items.search(workspace_slug=workspace_slug, query=query, params=params)
+        response = client.work_items.search(workspace_slug=workspace_slug, query=query, params=params)
+        data = serialize_resource(response)
+        if fields is not None:
+            data["issues"] = serialize_resources(data.get("issues") or [], fields=fields)
+        return data
