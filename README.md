@@ -143,8 +143,13 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 | `update_project` | Update a project with partial data |
 | `delete_project` | Delete a project by ID |
 | `get_project_worklog_summary` | Get work log summary for a project |
-| `get_project_members` | Get all members of a project |
+| `get_project_members` | Get project memberships, including `membership_id` and workspace-user `member_id` |
+| `add_project_members` | Add one or more existing workspace users to a project with roles |
+| `update_project_member` | Change a project membership role by `membership_id` |
+| `remove_project_member` | Remove a project membership by `membership_id` |
 | `update_project_features` | Update features configuration of a project |
+
+Project membership tools use two distinct IDs: `member_id` is the workspace user UUID, while `membership_id` is the project-membership UUID returned by `get_project_members` and required for update/removal. Project role values are `5` Guest, `15` Member, and `20` Admin. `add_project_members` accepts multiple existing active workspace users and returns one result per requested user, so Plane validation or permission failures can be reported alongside successful additions. Plane requires project-admin or workspace-admin permission for these mutations. The public API supports adding members, updating roles, and removing memberships; public reactivation of inactive memberships is not exposed by `plane-sdk==0.2.16`, so no reactivation tool or `is_active` update parameter is provided.
 
 ### Work Items
 
@@ -388,4 +393,3 @@ If you were using the previous Node.js-based `@makeplane/plane-mcp-server`, your
 ```
 
 **Please migrate to the new Python-based configuration shown in the Usage section above.**
-

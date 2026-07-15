@@ -1,8 +1,9 @@
 """Project-related tools for Plane MCP Server."""
 
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 from fastmcp import FastMCP
+from plane.errors.errors import HttpError
 from plane.models.enums import TimezoneEnum
 from plane.models.estimates import (
     CreateEstimate,
@@ -21,9 +22,198 @@ from plane.models.projects import (
     UpdateProject,
 )
 from plane.models.query_params import PaginatedQueryParams
-from plane.models.users import UserLite
+from pydantic import BaseModel, ConfigDict, Field
 
 from plane_mcp.client import get_plane_client_context
+
+ProjectRole = Literal[5, 15, 20]
+PROJECT_ROLE_LABELS: dict[int, str] = {
+    5: "Guest",
+    15: "Member",
+    20: "Admin",
+}
+VALID_PROJECT_ROLES = set(PROJECT_ROLE_LABELS)
+
+
+class ProjectMemberInput(BaseModel):
+    """Input for adding an existing workspace user to a project."""
+
+    member_id: str = Field(..., description="Workspace user UUID to add to the project.")
+    role: ProjectRole = Field(..., description="Project role: 5=Guest, 15=Member, 20=Admin.")
+
+
+class ProjectMembership(BaseModel):
+    """Compact project-membership record exposed through MCP."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: str | None = Field(
+        None,
+        description="Backward-compatible alias for the workspace user UUID when available.",
+    )
+    membership_id: str | None = Field(None, description="ProjectMember record UUID.")
+    member_id: str | None = Field(None, description="Workspace user UUID.")
+    role: int | None = None
+    role_slug: str | None = None
+    is_active: bool | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    avatar: str | None = None
+    avatar_url: str | None = None
+    display_name: str | None = None
+
+
+class ProjectMemberMutationResult(BaseModel):
+    """Per-member result for bulk project-membership mutations."""
+
+    model_config = ConfigDict(extra="allow")
+
+    member_id: str
+    success: bool
+    role: int | None = None
+    membership_id: str | None = None
+    is_active: bool | None = None
+    status_code: int | None = None
+    error: str | None = None
+    response: Any | None = None
+
+
+class ProjectMemberRemovalResult(BaseModel):
+    """Confirmation returned after removing a project membership."""
+
+    membership_id: str
+    removed: bool
+
+
+class ProjectMembershipAPI:
+    """Small bridge for project-member mutations missing from plane-sdk 0.2.16."""
+
+    def __init__(self, projects_resource: Any) -> None:
+        self._projects = projects_resource
+
+    def list(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        return self._projects.get_members(
+            workspace_slug=workspace_slug,
+            project_id=project_id,
+            params=params,
+        )
+
+    def create(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        member_id: str,
+        role: int,
+    ) -> Any:
+        return self._projects._post(
+            f"{workspace_slug}/projects/{project_id}/members",
+            {"member": member_id, "role": role},
+        )
+
+    def update_role(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        membership_id: str,
+        role: int,
+    ) -> Any:
+        return self._projects._patch(
+            f"{workspace_slug}/projects/{project_id}/members/{membership_id}",
+            {"role": role},
+        )
+
+    def delete(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        membership_id: str,
+    ) -> None:
+        self._projects._delete(f"{workspace_slug}/projects/{project_id}/members/{membership_id}")
+
+
+def _validate_project_role(role: int) -> None:
+    if role not in VALID_PROJECT_ROLES:
+        raise ValueError("role must be one of 5 (Guest), 15 (Member), or 20 (Admin)")
+
+
+def _coerce_member_input(member: ProjectMemberInput | dict[str, Any]) -> ProjectMemberInput:
+    if isinstance(member, ProjectMemberInput):
+        return member
+    return ProjectMemberInput.model_validate(member)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    if hasattr(value, "dict"):
+        return value.dict(exclude_none=True)
+    return {}
+
+
+def _get_id(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        nested_id = value.get("id")
+        return str(nested_id) if nested_id is not None else None
+    return None
+
+
+def _extract_member_id(data: dict[str, Any]) -> str | None:
+    for key in ("member_id", "member", "user_id", "user"):
+        member_id = _get_id(data.get(key))
+        if member_id:
+            return member_id
+
+    member_detail = data.get("member_detail") or data.get("user_detail")
+    member_id = _get_id(member_detail)
+    if member_id:
+        return member_id
+
+    return str(data["id"]) if data.get("id") is not None else None
+
+
+def _extract_membership_id(data: dict[str, Any]) -> str | None:
+    for key in ("membership_id", "project_member_id"):
+        membership_id = data.get(key)
+        if membership_id is not None:
+            return str(membership_id)
+
+    if any(key in data for key in ("member", "member_id", "user", "user_id", "member_detail", "user_detail")):
+        return str(data["id"]) if data.get("id") is not None else None
+
+    return None
+
+
+def _normalize_project_membership(value: Any) -> ProjectMembership:
+    data = _as_dict(value)
+    member_id = _extract_member_id(data)
+    membership_id = _extract_membership_id(data)
+
+    member_detail = data.get("member_detail") or data.get("user_detail")
+    if isinstance(member_detail, dict):
+        for key in ("first_name", "last_name", "email", "avatar", "avatar_url", "display_name"):
+            if key not in data and key in member_detail:
+                data[key] = member_detail[key]
+
+    data["member_id"] = member_id
+    data["membership_id"] = membership_id
+    data["id"] = member_id
+    return ProjectMembership.model_validate(data)
+
+
+def _http_error_response(response: object | None) -> object | None:
+    if response is None or isinstance(response, (str, int, float, bool, dict, list)):
+        return response
+    return str(response)
 
 
 def register_project_tools(mcp: FastMCP) -> None:
@@ -308,9 +498,13 @@ def register_project_tools(mcp: FastMCP) -> None:
         return client.projects.get_worklog_summary(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
-    def get_project_members(project_id: str, params: dict[str, Any] | None = None) -> list[UserLite]:
+    def get_project_members(project_id: str, params: dict[str, Any] | None = None) -> list[ProjectMembership]:
         """
         Get all members of a project.
+
+        The response includes both member_id (workspace user UUID) and
+        membership_id (project-membership UUID, when returned by Plane). Use
+        membership_id with update_project_member and remove_project_member.
 
         Args:
             workspace_slug: The workspace slug identifier
@@ -318,10 +512,142 @@ def register_project_tools(mcp: FastMCP) -> None:
             params: Optional query parameters as a dictionary
 
         Returns:
-            List of UserLite objects representing project members
+            List of project membership records
         """
         client, workspace_slug = get_plane_client_context()
-        return client.projects.get_members(workspace_slug=workspace_slug, project_id=project_id, params=params)
+        memberships = ProjectMembershipAPI(client.projects).list(
+            workspace_slug=workspace_slug,
+            project_id=project_id,
+            params=params,
+        )
+        return [_normalize_project_membership(member) for member in memberships]
+
+    @mcp.tool()
+    def add_project_members(
+        project_id: str,
+        members: list[ProjectMemberInput],
+    ) -> list[ProjectMemberMutationResult]:
+        """
+        Add existing workspace users to a project.
+
+        Args:
+            project_id: UUID of the project
+            members: Workspace users and roles to add. member_id is the
+                workspace user UUID; role must be 5 (Guest), 15 (Member), or
+                20 (Admin).
+
+        Returns:
+            One result per requested member. Plane validation and permission
+            failures are returned per member so bulk additions can partially
+            succeed.
+        """
+        if not members:
+            raise ValueError("members must contain at least one project member to add")
+
+        member_inputs = [_coerce_member_input(member) for member in members]
+        duplicate_member_ids = {
+            member.member_id
+            for member in member_inputs
+            if sum(1 for candidate in member_inputs if candidate.member_id == member.member_id) > 1
+        }
+        if duplicate_member_ids:
+            duplicate_list = ", ".join(sorted(duplicate_member_ids))
+            raise ValueError(f"duplicate member_id values are not allowed: {duplicate_list}")
+
+        for member in member_inputs:
+            _validate_project_role(member.role)
+
+        client, workspace_slug = get_plane_client_context()
+        memberships_api = ProjectMembershipAPI(client.projects)
+        results: list[ProjectMemberMutationResult] = []
+
+        for member in member_inputs:
+            try:
+                response = memberships_api.create(
+                    workspace_slug=workspace_slug,
+                    project_id=project_id,
+                    member_id=member.member_id,
+                    role=member.role,
+                )
+            except HttpError as error:
+                results.append(
+                    ProjectMemberMutationResult(
+                        member_id=member.member_id,
+                        success=False,
+                        role=member.role,
+                        status_code=error.status_code,
+                        error=str(error),
+                        response=_http_error_response(error.response),
+                    )
+                )
+                continue
+
+            membership = _normalize_project_membership(response)
+            results.append(
+                ProjectMemberMutationResult(
+                    member_id=membership.member_id or member.member_id,
+                    success=True,
+                    role=membership.role if membership.role is not None else member.role,
+                    membership_id=membership.membership_id,
+                    is_active=membership.is_active,
+                    status_code=201,
+                )
+            )
+
+        return results
+
+    @mcp.tool()
+    def update_project_member(
+        project_id: str,
+        membership_id: str,
+        role: ProjectRole,
+    ) -> ProjectMembership:
+        """
+        Change a project membership's role.
+
+        Args:
+            project_id: UUID of the project
+            membership_id: ProjectMember record UUID, not the workspace user UUID
+            role: New project role: 5 (Guest), 15 (Member), or 20 (Admin)
+
+        Returns:
+            Updated project membership record
+        """
+        _validate_project_role(role)
+
+        client, workspace_slug = get_plane_client_context()
+        response = ProjectMembershipAPI(client.projects).update_role(
+            workspace_slug=workspace_slug,
+            project_id=project_id,
+            membership_id=membership_id,
+            role=role,
+        )
+        membership = _normalize_project_membership(response)
+        membership.membership_id = membership.membership_id or membership_id
+        membership.role = membership.role if membership.role is not None else role
+        return membership
+
+    @mcp.tool()
+    def remove_project_member(project_id: str, membership_id: str) -> ProjectMemberRemovalResult:
+        """
+        Remove a project membership.
+
+        Plane soft-deactivates the membership and returns HTTP 204.
+
+        Args:
+            project_id: UUID of the project
+            membership_id: ProjectMember record UUID, not the workspace user UUID
+
+        Returns:
+            Compact removal confirmation
+        """
+        client, workspace_slug = get_plane_client_context()
+        ProjectMembershipAPI(client.projects).delete(
+            workspace_slug=workspace_slug,
+            project_id=project_id,
+            membership_id=membership_id,
+        )
+        return ProjectMemberRemovalResult(membership_id=membership_id, removed=True)
 
     @mcp.tool()
     def update_project_features(
