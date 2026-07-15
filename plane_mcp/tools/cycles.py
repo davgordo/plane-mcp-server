@@ -20,6 +20,7 @@ from pydantic import Field
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.tools.pql_reference import PQL_FIELD_HINT, PQL_FULL_REFERENCE
+from plane_mcp.tools.serialization import serialize_resources
 
 logger = get_logger(__name__)
 
@@ -237,7 +238,8 @@ def register_cycle_tools(mcp: FastMCP) -> None:
             per_page: Results per page, 1-100 (default 25).
             cursor: Pagination cursor from a previous response's `next_cursor`.
             expand: Comma-separated related fields to expand.
-            fields: Comma-separated sparse fieldset.
+            fields: Comma-separated sparse fieldset. Unrequested work-item fields
+                are absent; requested null fields remain present as null.
 
         Returns:
             Paginated envelope with results, total_count, next_cursor, prev_cursor.
@@ -269,9 +271,7 @@ def register_cycle_tools(mcp: FastMCP) -> None:
                 }
             raise
         return {
-            "results": [
-                item.model_dump() if hasattr(item, "model_dump") else item for item in (response.results or [])
-            ],
+            "results": serialize_resources(response.results or [], fields=fields),
             "total_count": response.total_count,
             "count": response.count,
             "next_cursor": response.next_cursor,

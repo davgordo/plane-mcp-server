@@ -25,6 +25,7 @@ from plane.models.query_params import PaginatedQueryParams
 from pydantic import BaseModel, ConfigDict, Field
 
 from plane_mcp.client import get_plane_client_context
+from plane_mcp.tools.serialization import serialize_resources
 
 ProjectRole = Literal[5, 15, 20]
 PROJECT_ROLE_LABELS: dict[int, str] = {
@@ -226,7 +227,7 @@ def register_project_tools(mcp: FastMCP) -> None:
         expand: str | None = None,
         fields: str | None = None,
         order_by: str | None = None,
-    ) -> list[Project]:
+    ) -> list[dict[str, Any]]:
         """
         List all projects in a workspace.
 
@@ -235,11 +236,12 @@ def register_project_tools(mcp: FastMCP) -> None:
             cursor: Pagination cursor for getting next set of results
             per_page: Number of results per page (1-100)
             expand: Comma-separated list of related fields to expand in response
-            fields: Comma-separated list of fields to include in response
+            fields: Comma-separated sparse fieldset. Unrequested project fields
+                are absent; requested null fields remain present as null.
             order_by: Field to order results by. Prefix with '-' for descending order
 
         Returns:
-            List of Project objects
+            List of project dictionaries
         """
         client, workspace_slug = get_plane_client_context()
 
@@ -256,7 +258,7 @@ def register_project_tools(mcp: FastMCP) -> None:
             params=params,
         )
 
-        return response.results
+        return serialize_resources(response.results, fields=fields)
 
     @mcp.tool()
     def create_project(
