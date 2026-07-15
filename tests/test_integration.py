@@ -44,7 +44,7 @@ def extract_result(result):
         if hasattr(content, "text"):
             try:
                 return json.loads(content.text)
-            except:
+            except Exception:
                 return {"raw": content.text}
     return {}
 
@@ -267,6 +267,10 @@ EXPECTED_TOOLS = [
     "retrieve_project",
     "update_project",
     "delete_project",
+    "get_project_members",
+    "add_project_members",
+    "update_project_member",
+    "remove_project_member",
     # Work item tools
     "create_work_item",
     "list_work_items",
