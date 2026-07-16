@@ -157,6 +157,8 @@ export LOG_USER_INFO="true"
 
 The server provides comprehensive tools for interacting with Plane. All tools use Pydantic models from the Plane SDK for type safety and validation.
 
+Tools that expose a `fields` argument use it as a true sparse fieldset: unrequested resource fields are absent, requested fields whose actual value is null remain present as null, and pagination metadata is unchanged.
+
 ### Projects
 
 | Tool Name | Description |

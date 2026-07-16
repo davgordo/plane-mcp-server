@@ -12,6 +12,7 @@ from plane.models.intake import (
 from plane.models.query_params import PaginatedQueryParams, RetrieveQueryParams
 
 from plane_mcp.client import get_plane_client_context
+from plane_mcp.tools.serialization import serialize_resource, serialize_resources
 
 
 def register_intake_tools(mcp: FastMCP) -> None:
@@ -21,28 +22,33 @@ def register_intake_tools(mcp: FastMCP) -> None:
     def list_intake_work_items(
         project_id: str,
         params: dict[str, Any] | None = None,
-    ) -> list[IntakeWorkItem]:
+    ) -> list[dict[str, Any]]:
         """
         List all intake work items in a project.
 
         Args:
             workspace_slug: The workspace slug identifier
             project_id: UUID of the project
-            params: Optional query parameters as a dictionary (e.g., per_page, cursor)
+            params: Optional query parameters as a dictionary (e.g., per_page,
+                cursor, fields). When fields is supplied, it is a true sparse
+                fieldset: unrequested fields are absent and requested null
+                fields remain present as null. Omitting fields returns the
+                complete IntakeWorkItem shape.
 
         Returns:
-            List of IntakeWorkItem objects
+            List of complete or sparse intake work item dictionaries.
         """
         client, workspace_slug = get_plane_client_context()
 
         query_params = None
+        fields = params.get("fields") if params else None
         if params:
             query_params = PaginatedQueryParams(**params)
 
         response: PaginatedIntakeWorkItemResponse = client.intake.list(
             workspace_slug=workspace_slug, project_id=project_id, params=query_params
         )
-        return response.results
+        return serialize_resources(response.results, fields=fields)
 
     @mcp.tool()
     def create_intake_work_item(
@@ -71,7 +77,7 @@ def register_intake_tools(mcp: FastMCP) -> None:
         project_id: str,
         work_item_id: str,
         params: dict[str, Any] | None = None,
-    ) -> IntakeWorkItem:
+    ) -> dict[str, Any]:
         """
         Retrieve an intake work item by work item ID.
 
@@ -80,23 +86,29 @@ def register_intake_tools(mcp: FastMCP) -> None:
             project_id: UUID of the project
             work_item_id: UUID of the work item (use the issue field from
                 IntakeWorkItem response, not the intake work item ID)
-            params: Optional query parameters as a dictionary (e.g., expand, fields)
+            params: Optional query parameters as a dictionary (e.g., expand,
+                fields). When fields is supplied, it is a true sparse fieldset:
+                unrequested fields are absent and requested null fields remain
+                present as null. Omitting fields returns the complete
+                IntakeWorkItem shape.
 
         Returns:
-            IntakeWorkItem object
+            Complete or sparse intake work item dictionary.
         """
         client, workspace_slug = get_plane_client_context()
 
         query_params = None
+        fields = params.get("fields") if params else None
         if params:
             query_params = RetrieveQueryParams(**params)
 
-        return client.intake.retrieve(
+        intake_item = client.intake.retrieve(
             workspace_slug=workspace_slug,
             project_id=project_id,
             work_item_id=work_item_id,
             params=query_params,
         )
+        return serialize_resource(intake_item, fields=fields)
 
     @mcp.tool()
     def update_intake_work_item(
