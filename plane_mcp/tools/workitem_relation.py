@@ -68,10 +68,10 @@ ACTIONS = (
 )
 
 FOOTER = (
-    "Call list_definitions first and match the user's wording to an entry. A "
-    f"built_in_dependencies value ({', '.join(DEPENDENCY_TYPES)}) goes in relation_type; a "
-    "custom definition needs its id in relation_definition_id and the matched outward or "
-    "inward label in relation_definition_label, which sets direction."
+    f"For a built-in dependency, pass one of ({', '.join(DEPENDENCY_TYPES)}) directly in relation_type. "
+    "For any other relationship, call list_definitions first and match the user's wording to a custom "
+    "definition; pass its id in relation_definition_id and the matched outward or inward label in "
+    "relation_definition_label, which sets direction."
 )
 
 LEGACY = {
