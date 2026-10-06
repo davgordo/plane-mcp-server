@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Literal, get_args
 
 from fastmcp import FastMCP
+from plane.errors.errors import HttpError
 from plane.models.work_item_relation_definitions import (
     CreateWorkItemRelationDefinition,
     PaginatedWorkItemRelationDefinitionResponse,
@@ -67,10 +68,10 @@ ACTIONS = (
 )
 
 FOOTER = (
-    "Call list_definitions first and match the user's wording to an entry. A "
-    f"built_in_dependencies value ({', '.join(DEPENDENCY_TYPES)}) goes in relation_type; a "
-    "custom definition needs its id in relation_definition_id and the matched outward or "
-    "inward label in relation_definition_label, which sets direction."
+    f"For a built-in dependency, pass one of ({', '.join(DEPENDENCY_TYPES)}) directly in relation_type. "
+    "For any other relationship, call list_definitions first and match the user's wording to a custom "
+    "definition; pass its id in relation_definition_id and the matched outward or inward label in "
+    "relation_definition_label, which sets direction."
 )
 
 LEGACY = {
@@ -82,6 +83,44 @@ LEGACY = {
     "update_work_item_relation_definition": "update_definition",
     "delete_work_item_relation_definition": "delete_definition",
 }
+
+
+def _ce_relations_path(workspace_slug: str, project_id: str, workitem_id: str) -> str:
+    return f"{workspace_slug}/projects/{project_id}/work-items/{workitem_id}/relations/"
+
+
+def _is_not_found(exc: HttpError) -> bool:
+    return exc.status_code == 404
+
+
+def _ce_dependency_list(client, workspace_slug: str, project_id: str, workitem_id: str) -> dict[str, list[Any]]:
+    """Read CE's legacy relation endpoint and expose only built-in dependencies."""
+    raw = client.work_items.relations._get(_ce_relations_path(workspace_slug, project_id, workitem_id))
+    result: dict[str, list[Any]] = {}
+    for relation_type in DEPENDENCY_TYPES:
+        items = raw.get(relation_type, []) if isinstance(raw, dict) else []
+        result[relation_type] = [
+            item
+            if isinstance(item, dict)
+            else {"id": item, "relation_type": relation_type}
+            for item in items
+        ]
+    return result
+
+
+def _ce_dependency_create(
+    client,
+    workspace_slug: str,
+    project_id: str,
+    workitem_id: str,
+    relation_type: str,
+    workitem_ids: list[str],
+) -> Any:
+    """Create built-in dependencies through the relation endpoint shipped by CE."""
+    return client.work_items.relations._post(
+        _ce_relations_path(workspace_slug, project_id, workitem_id),
+        {"relation_type": relation_type, "issues": workitem_ids},
+    )
 
 
 def _all_definitions(client, workspace_slug: str, is_default, is_active) -> list[WorkItemRelationDefinition]:
@@ -183,9 +222,18 @@ def register(mcp: FastMCP) -> None:
             return error
 
         if action == "list":
-            dependencies = client.work_items.dependencies.list(
-                workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
-            )
+            try:
+                dependencies = client.work_items.dependencies.list(
+                    workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
+                )
+            except HttpError as exc:
+                if not _is_not_found(exc):
+                    raise
+                return {
+                    "dependencies": _ce_dependency_list(client, workspace_slug, project_id, workitem_id),
+                    "custom": {},
+                }
+
             custom = client.work_items.custom_relations.list(
                 workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
             )
@@ -201,15 +249,27 @@ def register(mcp: FastMCP) -> None:
             if relation_type:
                 if error := one_of("relation_type", relation_type, DEPENDENCY_TYPES, _OTHER_RELATIONS):
                     return error
-                return client.work_items.dependencies.create(
-                    workspace_slug=workspace_slug,
-                    project_id=project_id,
-                    work_item_id=workitem_id,
-                    data=CreateWorkItemDependency(
-                        relation_type=relation_type,  # type: ignore[arg-type]
-                        work_item_ids=targets,
-                    ),
-                )
+                try:
+                    return client.work_items.dependencies.create(
+                        workspace_slug=workspace_slug,
+                        project_id=project_id,
+                        work_item_id=workitem_id,
+                        data=CreateWorkItemDependency(
+                            relation_type=relation_type,  # type: ignore[arg-type]
+                            work_item_ids=targets,
+                        ),
+                    )
+                except HttpError as exc:
+                    if not _is_not_found(exc):
+                        raise
+                    return _ce_dependency_create(
+                        client,
+                        workspace_slug,
+                        project_id,
+                        workitem_id,
+                        relation_type,
+                        targets,
+                    )
             if relation_definition_id and relation_definition_label:
                 return client.work_items.custom_relations.create(
                     workspace_slug=workspace_slug,
